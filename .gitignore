@@ -67,3 +67,15 @@ case_study/perf_model/energy_per_membit
 case_study/perf_model/energy_per_flop/*
 lib/
 bin/
+output/LLM/detailed_metrics_m2048_n128_k65536.txt
+output/LLM/detailed_metrics_m2048_n2048_k4096.txt
+output/LLM/detailed_metrics_m2048_n4096_k4096.txt
+output/LLM/detailed_metrics_m2048_n4096_k11008.txt
+output/LLM/detailed_metrics_m2048_n11008_k4096.txt
+output/LLM/detailed_metrics_m6144_n4096_k4096.txt
+output/LLM/summary_m2048_n128_k65536.txt
+output/LLM/summary_m2048_n2048_k4096.txt
+output/LLM/summary_m2048_n4096_k4096.txt
+output/LLM/summary_m2048_n4096_k11008.txt
+output/LLM/summary_m2048_n11008_k4096.txt
+output/LLM/summary_m6144_n4096_k4096.txt

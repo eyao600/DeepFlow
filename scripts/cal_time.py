@@ -9,17 +9,26 @@ t_elapsed =0.0
 print("Time spent in different GEMMs")
 # Loop through files in the directory
 for filename in os.listdir(directory):
+    if filename.startswith("detailed_metrics"):
+        continue
     if filename.endswith(".txt"):  # You can adjust the file extension as needed
         file_path = os.path.join(directory, filename)
 
-        data = pd.read_csv(file_path, sep=':', header=None, names=['Field', 'Value'], skipinitialspace=True)
-        # Extract the time value
-        time_row = data[data['Field'] == 'Time']
-        if not time_row.empty:
-            time_value = float(time_row['Value'].iloc[0])
-            print(time_value)
-        else:
-            print("Time value not found in the file.")
+        # data = pd.read_csv(file_path, sep=':', header=None, names=['Field', 'Value'], skipinitialspace=True)
+        # # Extract the time value
+        # time_row = data[data['Field'] == 'Time']
+        # if not time_row.empty:
+        #     time_value = float(time_row['Value'].iloc[0])
+        #     print(time_value)
+        # else:
+        #     print("Time value not found in the file.")
+
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+            for line in lines:
+                if "Time: " in line:
+                    time_value = float(line.split(":")[1].strip())
+                    print(time_value)   
         
         t_elapsed += time_value
 

@@ -125,7 +125,7 @@ class TimeCalculation:
         self.tot_mem            = 0
         self.tot_time           = 0
         self.debug              = False #############################
-        self.validating_GEMM    = False
+        self.validating_GEMM    = True
     
     def updateParams(self, debug, m, n, k, t, kp1, kp2, dp, lp, gemm,
                       batch_size, hidden_dim, seq_len, vocab_size, num_layer):
@@ -1641,6 +1641,143 @@ class TimeCalculation:
 
     def getTime(self):
         return self.tot_time
+
+def write_detailed_metrics(TC, exp_dir, fname, m=None, n=None, k=None, t=None, kp1=None, kp2=None):
+    """
+    Write detailed performance metrics for training simulation
+    Extracts forward/backward GEMM compute times and communication sizes
+    
+    Parameters:
+    m - Input dimension for GEMM
+    n - Output dimension for GEMM
+    k - Inner dimension for GEMM
+    t - Parallelism strategy (RC or CR)
+    kp1 - Kernel parallelism dimension 1
+    kp2 - Kernel parallelism dimension 2
+    """
+    # Create output path
+    output_file = fname
+    
+    # Use provided GEMM dimensions if available, otherwise fall back to TC defaults
+    m_dim = m if m is not None else TC.miniB
+    n_dim = n if n is not None else TC.G * TC.D
+    k_dim = k if k is not None else 2 * TC.D
+    kp1_dim = kp1 if kp1 is not None else TC.kp_hidden_dim1
+    kp2_dim = kp2 if kp2 is not None else TC.kp_hidden_dim2
+    
+    # Determine which parallelism pattern to use
+    if t == 'CR':
+        parallelism_type = 1  # CR pattern
+    elif t == 'RC':
+        parallelism_type = 2  # RC pattern
+    else:
+        parallelism_type = TC.kp_hidden_type  # Use default from TC
+    
+    with open(output_file, "w") as f:
+        f.write("DeepFlow Detailed Performance Metrics\n")
+        f.write("====================================\n\n")
+        
+        # ===== Forward Pass Metrics =====
+        f.write("FORWARD PASS METRICS\n")
+        f.write("-----------------\n")
+        f.write(f"Dimensions: m={m_dim}, n={n_dim}, k={k_dim}\n")
+        f.write(f"Parallelism: type={t if t else 'default'}, kp1={kp1_dim}, kp2={kp2_dim}\n\n")
+        
+        # Get forward computation times by calling the regular functions
+        fwd_comp_time = 0
+        if parallelism_type == 1: # CR
+            # Call the existing function but extract just the time
+            gemm_time, _, _ = TC.getDistGEMM_f_kp1(m_dim, k_dim, n_dim, kp1_dim, "Cf_kp1")
+            fwd_comp_time = gemm_time
+            
+            # Estimate communication size manually (bytes per step)
+            # Size = precision * dimensions / parallelism 
+            fwd_comm_size = TC.precision * m_dim * n_dim / kp1_dim
+        elif parallelism_type == 2: # RC
+            gemm_time, _ , _ = TC.getDistGEMM_f_kp2(m_dim, k_dim, n_dim, kp1_dim, kp2_dim, "Cf_kp2")
+            fwd_comp_time = gemm_time
+            
+            # Estimate communication size for RC pattern
+            fwd_comm_size = TC.precision * (m_dim / kp1_dim) * n_dim
+        else: # Handle kp_hidden_type = -1 or any other value
+            # Non-parallel case, just use getCf
+            gemm_time = TC.getCf(m=m_dim, k=k_dim, n=n_dim)
+            fwd_comp_time = gemm_time 
+            fwd_comm_size = 0  # No communication in non-parallel case
+        
+        # ===== Backward Pass Metrics =====
+        # Calculate gradient computation and communication metrics
+        inp_grad_comp_time = 0
+        wgt_grad_comp_time = 0
+        inp_grad_comm_size = 0
+        wgt_grad_comm_size = 0
+        
+        if parallelism_type == 1: # CR
+            # For backprop, we need gradient w.r.t. activations and weights
+            gemm_time, reduction_time = TC.getDistGEMM_b_kp1(m_dim, k_dim, n_dim, kp1_dim, "Cb_kp1")
+            
+            # In getDistGEMM_b_kp1, grad_act and grad_wt are separate
+            # Extract them from the internal calls
+            grad_wt_time, _, _ = TC.getGEMMTime(k_dim, (m_dim // kp1_dim), n_dim, "Cb_kp1_wt")
+            grad_act_time, _, _ = TC.getGEMMTime(m_dim, (n_dim // kp1_dim), k_dim, "Cb_kp1_act")
+            
+            wgt_grad_comp_time = grad_wt_time
+            inp_grad_comp_time = grad_act_time
+            
+            # Communication size for input gradients
+            inp_grad_comm_size = TC.precision * m_dim * n_dim / kp1_dim
+            
+            # Add data parallel reduction if applicable
+            if TC.dp > 1:
+                # Add DP reduction communication
+                wgt_grad_comm_size = TC.precision * (k_dim / kp1_dim) * n_dim / TC.dp
+            
+        elif parallelism_type == 2: # RC
+            # Similar approach for RC pattern
+            gemm_time, reduction_time = TC.getDistGEMM_b_kp2(m_dim, k_dim, n_dim, kp1_dim, kp2_dim, "Cb_kp2")
+            
+            # In getDistGEMM_b_kp2, extract the individual components
+            grad_wt_time, _, _ = TC.getGEMMTime(k_dim / kp1_dim, m_dim, n_dim / kp2_dim, "Cb_kp2_wt")
+            grad_act_time, _, _ = TC.getGEMMTime(m_dim / kp1_dim, n_dim, k_dim / kp2_dim, "Cb_kp2_act")
+            
+            wgt_grad_comp_time = grad_wt_time
+            inp_grad_comp_time = grad_act_time
+            
+            # Communication sizes for RC pattern
+            inp_grad_comm_size = TC.precision * (m_dim / kp1_dim) * n_dim + TC.precision * k_dim * n_dim / kp2_dim
+            
+            # For weight gradients in RC pattern - KP comm always needed
+            # Add data parallel reduction if applicable
+            if TC.dp > 1:
+                wgt_grad_comm_size = TC.precision * (k_dim / kp1_dim) * (n_dim / kp2_dim) / TC.dp
+        else:
+            # Non-parallel case, use regular getCb
+            # For non-parallel case, we'll estimate the backward pass times
+            grad_act_time, _, _ = TC.getGEMMTime(m_dim, n_dim, k_dim, "Cb_act")
+            grad_wt_time, _, _ = TC.getGEMMTime(k_dim, m_dim, n_dim, "Cb_wt")
+            
+            inp_grad_comp_time = grad_act_time
+            wgt_grad_comp_time = grad_wt_time
+            inp_grad_comm_size = 0
+            
+            # For non-parallel case, only add DP comm if applicable
+            if TC.dp > 1:
+                wgt_grad_comm_size = TC.precision * k_dim * n_dim / TC.dp
+            else:
+                wgt_grad_comm_size = 0
+        
+        # Write the calculated metrics to the output file
+        f.write(f"Forward Pass GEMM Computation Time: {fwd_comp_time} seconds\n")
+        f.write(f"Forward Pass Communication Size (per step): {fwd_comm_size / (1024*1024*1024):.6f} GB\n\n")
+        
+        f.write("BACKWARD PASS METRICS\n")
+        f.write("------------------\n")
+        f.write(f"Input Gradient Computation Time: {inp_grad_comp_time} seconds\n")
+        f.write(f"Input Gradient Communication Size (per step): {inp_grad_comm_size / (1024*1024*1024):.6f} GB\n\n")
+        
+        f.write(f"Weight Gradient Computation Time: {wgt_grad_comp_time} seconds\n")
+        f.write(f"Weight Gradient Communication Size (per step): {wgt_grad_comm_size / (1024*1024*1024):.6f} GB\n\n")
+
 def callPerf(exp_config, exp_dir, debug):
     exp_path = os.path.expandvars(os.path.expanduser(exp_config))
     exp_config = config.parse_config(exp_path)
@@ -1685,15 +1822,16 @@ def callPerf(exp_config, exp_dir, debug):
 @click.option("--lp", help="layer parallelism", default=None, type=int, required=False) #only use for GEMM validation
 
 def main(exp_config, exp_dir, debug, m, n, k, t, kp1, kp2, gemm, batch_size, hidden_dim, seq_len, vocab_size, num_layer, dp, lp, args_input=False):
+
+    # Otherwise process command line arguments
     exp_path = os.path.expandvars(os.path.expanduser(exp_config))
     exp_config = config.parse_config(exp_path)
     output_file = exp_dir + "/summary_m%s_n%s_k%s.txt" %(m, n, k) ##Output dir should be created manually
-
-
+    detailed_metrics_file = exp_dir + "/detailed_metrics_m%s_n%s_k%s.txt" %(m, n, k)
     TC = TimeCalculation(exp_config)
     if args_input:
-        TC.updateParams(debug, m, n, k, t, kp1, kp2, dp, lp, gemm, 
-                    batch_size, hidden_dim, seq_len, vocab_size, num_layer)
+        TC.updateParams(debug, m, n, k, t, kp1, kp2, dp, lp, gemm,
+                batch_size, hidden_dim, seq_len, vocab_size, num_layer)
 
     #Report GEMM time on fw path
     if TC.validating_GEMM:
@@ -1712,18 +1850,23 @@ def main(exp_config, exp_dir, debug, m, n, k, t, kp1, kp2, gemm, batch_size, hid
           f.write("Best Order: {}\n".format(gemm_time[1]))
           f.write("Best Tile: {}\n".format(gemm_time[2]))
           f.write("Time: {}\n".format(gemm_time[0]))
-        return
-
-    tot_time, tot_param = TC.calcTime()
-    TC.printSysConfig(exp_config, output_file)
     
-    with open(output_file, "a+") as f:
-        f.write("\n\n==============================================\n")
-        f.write("Performance Results\n")
-        f.write("==============================================\n")
-        f.write("Time: {0:.8f}\n".format(tot_time))
-        f.write("Params (Billion): {0:.8f}\n".format(tot_param/1e9))
 
+        write_detailed_metrics(TC, exp_dir, detailed_metrics_file, m, n, k, t, kp1, kp2)
+
+        return
+    else:
+        tot_time, tot_param = TC.calcTime()
+        TC.printSysConfig(exp_config, output_file)
+
+        with open(output_file, "a+") as f:
+            f.write("\n\n==============================================\n")
+            f.write("Performance Results\n")
+            f.write("==============================================\n")
+            f.write("Time: {0:.8f}\n".format(tot_time))
+            f.write("Params (Billion): {0:.8f}\n".format(tot_param/1e9))
+        
+        write_detailed_metrics(TC, exp_dir, detailed_metrics_file, m, n, k, t, kp1, kp2)
    
 if __name__ == "__main__":
     main()

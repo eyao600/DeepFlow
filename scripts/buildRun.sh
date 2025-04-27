@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Source: https://dugas.ch/artificial_curiosity/GPT_architecture.html
-B=3200000
-D=12288
+B=1
+D=4096
 S=2048
 h=128
-nheads=96
-h_MLP1=49152
-h_MLP2=12288
+nheads=32
+h_MLP1=11008
+h_MLP2=4096
 # Source: https://lambdalabs.com/blog/demystifying-gpt-3#:~:text=GPT%2D3%20175B%20is%20trained%20with%20300%20Billion%20tokens
 n_tokens=300000000000
 
@@ -20,6 +20,6 @@ python3 mat_dims_amped.py $B $D $S $h $nheads $h_MLP1 $h_MLP2
 bash run.sh
 
 # calculate total time
-python3 cal_time.py $nheads $B $S $n_tokens 180013 16
+python3 cal_time.py $nheads $B $S $n_tokens 0 1
 #python cal_time.py 32 4096 2048 300000000000 180013 16 
 #usage: cal_time.py [-h] N_L B S ntokens comm_time N_TP
