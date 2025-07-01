@@ -2,7 +2,6 @@ from math import ceil
 import numpy as np
 import copy
 
-
 class Tile:
     def __init__(self, tile_dims, level, dtype_size):
         """
@@ -102,19 +101,20 @@ class TiledGEMM(Tile):
 
     def __repr__(self):
         return (
-            super().__repr__() +
-            f"  DRAM read: {formatBytes(self.mem_read[3])}, write: {formatBytes(self.mem_write[3])}\n"
+            super().__repr__()
+            + f"  DRAM read: {formatBytes(self.mem_read[3])}, write: {formatBytes(self.mem_write[3])}\n"
             f"  L2 read: {formatBytes(self.mem_read[2])}, write: {formatBytes(self.mem_write[2])}\n"
             f"  Shared read: {formatBytes(self.mem_read[1])}, write: {formatBytes(self.mem_write[1])}\n"
             f"  Reg read: {formatBytes(self.mem_read[0])}, write: {formatBytes(self.mem_write[0])}\n"
             f"  loop order: {self.order_dims}\n"
             f"{self.tile.__repr__()}"
         )
-    
+
     def print_count(self):
-        return (
-            f"read mk: {self.count[0]}, kn: {self.count[1]}, mn: {self.count[2]}, write mn: {self.count[3]}"
-        )
+        return f"read mk: {self.count[0]}, kn: {self.count[1]}, mn: {self.count[2]}, write mn: {self.count[3]}"
+
+    def print_bytes(self):
+        return f"{formatBytes(self.mem_read[3])}, {formatBytes(self.mem_write[3])}, {formatBytes(self.mem_read[2])}, {formatBytes(self.mem_write[2])}, {formatBytes(self.mem_read[1])}, {formatBytes(self.mem_write[1])}"
 
     def mem_accesses(self):
         return [r + w for r, w in zip(self.mem_read, self.mem_write)]
@@ -125,6 +125,8 @@ class TiledGEMM(Tile):
     def get_tile(self, tile_dims):
         return L2Tile(tile_dims, self.level - 1, self.num_bundle, self.dtype_size)
 
+        return L2Tile(tile_dims, self.level-1, self.num_bundle, self.dtype_size)
+    
     def sysarray_accesses(self):
         """
         assume systolic engine can support n x m x n GEMM  (e.g. 8 x 4 x 8 for A100 tensorcore), which is FLOPs_tile = n^2 * (m-1) FLOPs
@@ -181,20 +183,24 @@ class TiledGEMM(Tile):
         read_accesses[1] = l2_shared[0] * max_reload
         write_accesses[1] = l2_shared[1] * max_reload
 
-        inner = order_dims[2] # most inner loop
-        if inner == 'm':
+        inner = order_dims[2]  # most inner loop
+        if inner == "m":
             mk_load = max_reload
             kn_load = num_tiles_K * num_tiles_N
             mn_load = max_reload
-        elif inner == 'k':
+        elif inner == "k":
             mk_load = max_reload
             kn_load = max_reload
             mn_load = num_tiles_M * num_tiles_N
-        elif inner == 'n':
+        elif inner == "n":
             mk_load = num_tiles_M * num_tiles_K
             kn_load = max_reload
             mn_load = max_reload
-        read_accesses[2] = mk_load * self.tile.mk_read_bytes + kn_load * self.tile.kn_read_bytes + mn_load * self.tile.mn_read_bytes
+        read_accesses[2] = (
+            mk_load * self.tile.mk_read_bytes
+            + kn_load * self.tile.kn_read_bytes
+            + mn_load * self.tile.mn_read_bytes
+        )
         write_accesses[2] = mn_load * self.tile.mn_write_bytes
 
         # # read input tiles for first output tile
@@ -238,7 +244,8 @@ class TiledGEMM(Tile):
         # mn_write_count += 1
 
         # TODO: model DRAM accesses
-        read_accesses[3] = self.mk_bytes() + self.kn_bytes()
+        read_accesses[3] = self.mk_bytes() + self.kn_bytes() # input matrix compulsory cache misses only
+        write_accesses[3] = self.kn_bytes() # output matrix cache misses
 
         self.count = [mk_load, kn_load, mn_load, mn_load]
 
@@ -254,6 +261,7 @@ class L2Tile(Tile):
         self.mn_read_bytes = self.mn_bytes()
         self.mn_write_bytes = self.mn_bytes()
         # self.mk_read_bytes, self.kn_read_bytes, self.mn_read_bytes, self.mn_write_bytes = self.simulate_accesses()
+
 
     def __repr__(self):
         return (
@@ -273,16 +281,12 @@ class L2Tile(Tile):
         reuse_M = ceil(self.M / self.tile_M)
         reuse_K = ceil(self.K / self.tile_K)
         reuse_N = ceil(self.N / self.tile_N)
-
-        # effective number of SMs that are utilized
+        
+        # effective number of tiles that can be processed in parallel
         eff_sm = min(self.num_bundle, reuse_M * reuse_K * reuse_N)
 
-        # track bytes accessed from shared memory per SM
-        read_bytes = (
-            (self.tile.mk_bytes() + self.tile.kn_bytes())
-            * (reuse_M * reuse_N * reuse_K)
-            / eff_sm
-        )
+        # track bytes accessed from shared memory per sm
+        read_bytes = (self.tile.mk_bytes() + self.tile.kn_bytes()) * (reuse_M * reuse_N * reuse_K) / eff_sm
         write_bytes = self.tile.mn_bytes() * (reuse_M * reuse_N) / eff_sm
 
         return read_bytes, write_bytes
@@ -327,8 +331,8 @@ class L2Tile(Tile):
             tile_mn_write[m, n] = 1
 
             if active_sm >= self.num_bundle or (
-                m == ceil(self.M / self.tile_M) - 1
-                and n == ceil(self.N / self.tile_N) - 1
+                m == ceil(self.M / self.tile_M) - 1 
+                and n == ceil(self.N / self.tile_N) - 1 
                 and k == ceil(self.K / self.tile_K) - 1
             ):
                 mk_read_bytes += np.sum(tile_mk_read) * self.tile.mk_bytes()
@@ -342,6 +346,9 @@ class L2Tile(Tile):
                     np.sum(prev_mn_write * (~tile_mn_read)) * self.tile.mn_bytes()
                 )
 
+                active_sm = 0
+                mn_write_bytes += np.sum(prev_mn_write * (~tile_mn_read)) * self.tile.mn_bytes()
+            
                 active_sm = 0
 
                 prev_mk_read = copy.deepcopy(tile_mk_read)
@@ -371,17 +378,10 @@ class L1Tile(Tile):
         super().__init__(tile_dims, level, dtype_size)
 
 
-def formatBytes(bytes):
-    unit = ""
-    if bytes < 1024:
-        unit = "B"
-    elif bytes < 1024**2:
-        unit = "KB"
-        bytes /= 1024
-    elif bytes < 1024**3:
-        unit = "MB"
-        bytes /= 1024**2
-    else:
-        unit = "GB"
-        bytes /= 1024**3
-    return f"{bytes} {unit}"
+def formatBytes(size):
+    """Format bytes into a human-readable string."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} TB"
