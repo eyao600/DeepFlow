@@ -65,6 +65,30 @@ def run_LSTM(
         f.write("Params (Billion): {0:.8f}\n".format(tot_param / 1e9))
     print("Performance Results written to {}".format(output_file))
 
+def test_GEMM(exp_hw_config_path, M: int, K: int, N: int):
+    # Compute and return GEMM metrics based on M, K, N
+    exp_hw_path = os.path.expandvars(os.path.expanduser(exp_hw_config_path))
+    exp_hw_config = config.parse_config(exp_hw_path, config_type="hardware")
+
+    # exp_model_config_path = "/u1/ee/nanoproj/users/yaoe888/DeepFlow/eyao600/configs/model-config/GEMM.yaml"
+    # exp_model_path = os.path.expandvars(os.path.expanduser(exp_model_config_path))
+    # exp_model_config = config.parse_config(exp_model_path, config_type="GEMM")
+
+    TC = TimeCalculation(exp_hw_config, None, "GEMM")
+    TC.validating_GEMM = True
+
+    time, order, tiles, mem_accesses = TC.getCf(M, K, N)
+
+    return {
+        "time": float(time * 1000), # ms
+        "dram": int(mem_accesses[3]),
+        "l2": int(mem_accesses[2]),
+        "shared": int(mem_accesses[1]),
+        "l2_tile": tiles[2],
+        "l1_tile": tiles[1],
+    }
+
+
 def run_GEMM(
     exp_hw_config_path,
     exp_model_config_path,

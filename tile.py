@@ -150,7 +150,8 @@ class TiledGEMM(Tile):
             reload_mn = l2_factors[1]
 
         dram_counts = reload_mk * self.mk_bytes + reload_kn * self.kn_bytes
-        if self.total_bytes > self.capacity:
+
+        if self.total_bytes > self.tile.capacity:
             dram_counts += reload_mn * self.mn_bytes
 
         return dram_counts
@@ -192,6 +193,9 @@ class TiledGEMM(Tile):
             df = "as"
         else:
             raise NotImplementedError()
+        
+        # 
+        l2_write = self.mn_bytes
         
         mem_accesses[2] = (
             mk_load * self.tile.mk_bytes * factor_N

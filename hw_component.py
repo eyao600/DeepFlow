@@ -64,17 +64,32 @@ class Memory(Base):
         # return self.getArbitraryTileDims(self):
 
     def getGEMMBasedTileDims(self, M, K, N):
-        m_dims = [ M >> i for i in range(M.bit_length()) if (M >> i) >= 1 ]
-        k_dims = [ K >> i for i in range(K.bit_length()) if (K >> i) >= 1 ]
-        n_dims = [ N >> i for i in range(N.bit_length()) if (N >> i) >= 1 ]
+        """
+        Generate valid tile dimensions for GEMM (General Matrix Multiplication) based on 
+        the given matrix dimensions (M, K, N) and memory constraints.
 
+        This method calculates all possible tile dimensions that fit within the memory
+        constraints (`self.size_per_bundle`) and filters out dominated tiles to ensure
+        only the most efficient tiles are returned.
+        """
+
+        m_dims = [ int(M >> i) for i in range(M.bit_length()) if (M >> i) >= 1 ]
+        k_dims = [ int(K >> i) for i in range(K.bit_length()) if (K >> i) >= 1 ]
+        n_dims = [ int(N >> i) for i in range(N.bit_length()) if (N >> i) >= 1 ]
+
+        size = self.size_per_bundle
+
+        # Calculate the required memory for each tile and filter if it fits in the memory constraint
         valid_tiles = []
         for m in m_dims[::-1]:
             for k in k_dims[::-1]:
                 for n in n_dims[::-1]:
                     bytes_required = self.precision * (m * k + k * n + m * n)
-                    if bytes_required <= self.size_per_bundle:
+                    if bytes_required <= size:
                         valid_tiles.append((m, k, n))
+
+        # A tile is dominated if another tile exists with the same or better
+        # dimensions in two axes and strictly better in the third axis
         final_tiles = set()
         for candidate in valid_tiles:
             is_dominated = False

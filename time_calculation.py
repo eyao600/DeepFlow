@@ -152,49 +152,49 @@ class TimeCalculation:
         self.mode = mode
         
         # Dynamically select and instantiate the model class
-        model_class = self.get_model_class(mode)
-        self.model = model_class(model_config)  # Instantiate the model class
+        if model_config:
+            model_class = self.get_model_class(mode)
+            self.model = model_class(model_config)  # Instantiate the model class
 
+            # Model Parameters
+            # self.model = self.get_model_class(mode)
+            if mode == "LSTM":
+                self.B = self.model.batch_size
+                self.V = self.model.vocab_size
+                self.L = self.model.num_layers
+                self.D = self.model.hidden_dim
+                self.projection = self.model.projection
+                self.S = self.model.seq_len
+                self.G = self.model.num_gates
+                self.NL = self.model.num_non_linear
+                self.A = self.model.num_add
+                self.P = self.model.num_pointwise
+                # Define miniBatch size
+                self.miniB = math.ceil(self.B / self.dp)
 
-        # Model Parameters
-        # self.model = self.get_model_class(mode)
-        if mode == "LSTM":
-            self.B = self.model.batch_size
-            self.V = self.model.vocab_size
-            self.L = self.model.num_layers
-            self.D = self.model.hidden_dim
-            self.projection = self.model.projection
-            self.S = self.model.seq_len
-            self.G = self.model.num_gates
-            self.NL = self.model.num_non_linear
-            self.A = self.model.num_add
-            self.P = self.model.num_pointwise
-            # Define miniBatch size
-            self.miniB = math.ceil(self.B / self.dp)
-
-        if mode == "GEMM":
-            
-            self.M = self.model.M
-            self.K = self.model.K
-            self.N = self.model.N
-            
-        if mode == "LLM":
-            self.batch_size = self.model.batch_size
-            self.vocab_size = self.model.vocab_size
-            self.num_layers = self.model.num_layers
-            self.hidden_dim = self.model.hidden_dim
-            self.seq_len = self.model.seq_len
-            self.num_heads = self.model.num_heads
-            self.ffn_mult = self.model.ffn_mult
-            if self.ffn_mult is not None:
-                self.ffn_dim = self.model.hidden_dim * self.ffn_mult
-            else:
-                self.ffn_dim = self.model.ffn_dim
-            self.n_tokens = self.model.n_tokens
-            self.communication_time = self.model.communication_time
-            self.N_PP = self.model.N_PP
-            self.miniB = math.ceil(self.batch_size / self.dp)
-            
+            if mode == "GEMM":
+                
+                self.M = self.model.M
+                self.K = self.model.K
+                self.N = self.model.N
+                
+            if mode == "LLM":
+                self.batch_size = self.model.batch_size
+                self.vocab_size = self.model.vocab_size
+                self.num_layers = self.model.num_layers
+                self.hidden_dim = self.model.hidden_dim
+                self.seq_len = self.model.seq_len
+                self.num_heads = self.model.num_heads
+                self.ffn_mult = self.model.ffn_mult
+                if self.ffn_mult is not None:
+                    self.ffn_dim = self.model.hidden_dim * self.ffn_mult
+                else:
+                    self.ffn_dim = self.model.ffn_dim
+                self.n_tokens = self.model.n_tokens
+                self.communication_time = self.model.communication_time
+                self.N_PP = self.model.N_PP
+                self.miniB = math.ceil(self.batch_size / self.dp)
+                
     
     def get_model_class(self, model_type):
         """Return the appropriate model class based on the model type."""
@@ -602,7 +602,8 @@ class TimeCalculation:
 
 
     def getGEMMTime(self, dim1, dim2, dim3, name, original=False):
-        self.tileSpace = self.generateTileSpace(dim1, dim2, dim3, original=True)
+        self.tileSpace = self.generateTileSpace(dim1, dim2, dim3)
+
         tile2time = {}
         gemm_dict = {}
         orderSpace = self.generateOrder(dim1, dim2, dim3, name)
@@ -661,7 +662,9 @@ class TimeCalculation:
                 )
             )
 
-        return best_time, best_tile[0], best_tile[1], mem_access
+        best_order, best_dims = best_tile
+
+        return best_time, best_order, best_dims, mem_access
 
     def generateOrder(self, dim1, dim2, dim3, name):
         if self.dataflow == "best":  # best stationary
